@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
-use anyhow::{Result, Error};
+use anyhow::{Error, Ok, Result};
 
 use crate::{node::Node, prompt::{ClosenessToAnswer, Thought}};
 
@@ -13,6 +13,10 @@ pub struct Graph {
 impl Graph {
     pub fn new() -> Self {
         Self { nodes: Vec::new() }
+    }
+
+    pub fn from_vec(nodes: Vec<Node>) -> Self {
+        Self { nodes }
     }
 
     /// Create a new node in the graph
@@ -55,6 +59,36 @@ impl Graph {
         false
     }
 
+    /// Get the only branch that is not pruned, if there
+    /// are more than one that is not pruned, it will 
+    /// return a None. 
+    /// Note that the returned Graph object is a clone from 
+    /// the original branch in the original graph, not
+    /// a reference. 
+    pub fn get_only_one_not_pruned(&self) -> Result<Option<Graph>, Error> {
+        let branches: Vec<Vec<usize>> = self.get_branches();
+
+        if branches.len() == 1 {
+            let mut nodes = Vec::new();
+            for (index, node) in self.nodes
+                .iter()
+                .enumerate() 
+            {
+                if branches[0].contains(&index) {
+                    nodes.push(node.to_owned());
+                }
+            }
+
+            return Ok(
+                Some(
+                    Graph::from_vec(nodes)
+                )
+            );
+        }
+
+        Ok(None)
+    }
+
     /// Get all nodes on the same branch
     pub fn traverse(&self, start: usize) -> Vec<usize> {
         let mut visited: HashSet<usize> = HashSet::new();
@@ -90,17 +124,11 @@ impl Graph {
     /// Get the depth of the graph. 
     /// The depth of a graph is the maximum depth of any branch in the graph.
     pub fn depth(&self) -> usize {
-        let mut start_nodes_index: Vec<usize> = Vec::new();
-        self.nodes.iter().enumerate()
-            .map(|(index, node)| {
-                if node.get_previous().is_none() {
-                    start_nodes_index.push(index);
-                }
-            });
-        
+        let branches = self.get_branches();
+
         let mut maximum_depth: usize = 0;
-        for index in start_nodes_index {
-            let depth: usize = self.traverse(index).len();
+        for branch in branches {
+            let depth = branch.len();
             if depth > maximum_depth {
                 maximum_depth = depth;
             }
@@ -117,7 +145,7 @@ impl Graph {
     /// A vector of vectors, where each inner vector contains the indexes of nodes in a branch.
     pub fn get_branches(&self) -> Vec<Vec<usize>> {
         let mut start_nodes_index: Vec<usize> = Vec::new();
-        self.nodes.iter().enumerate()
+        let _ = self.nodes.iter().enumerate()
             .map(|(index, node)| {
                 if node.get_previous().is_none() {
                     start_nodes_index.push(index);

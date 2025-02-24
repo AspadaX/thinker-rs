@@ -57,15 +57,12 @@ impl InferenceState {
         }
     }
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferenceParameters {
     /// The initial size of the tree. Larger indicates more
     /// possibilities, but also more computation costs.
     tree_root_size: usize,
-    /// The maximum depth of the tree. Larger indicates more
-    /// possibilities, but also more computation costs.
-    /// `0` indicates infinite depth until an only tree remains.
-    max_depth: usize,
     /// The prune threshold for the tree. Larger indicates more
     /// possibilities, but also more computation costs.
     prune_threshold: f32,
@@ -75,7 +72,6 @@ impl Default for InferenceParameters {
     fn default() -> Self {
         Self {
             tree_root_size: 10,
-            max_depth: 0,
             prune_threshold: 0.5,
         }
     }
@@ -84,22 +80,16 @@ impl Default for InferenceParameters {
 impl InferenceParameters {
     pub fn new(
         tree_root_size: usize, 
-        max_depth: usize, 
         prune_threshold: f32, 
     ) -> Self {
         Self {
             tree_root_size,
-            max_depth,
             prune_threshold,
         }
     }
 
     pub fn access_tree_root_size(&self) -> usize {
         self.tree_root_size
-    }
-
-    pub fn access_max_depth(&self) -> usize {
-        self.max_depth
     }
 
     pub fn access_prune_threshold(&self) -> f32 {
@@ -263,18 +253,21 @@ impl Inference {
     
     /// Run the inference, return a final thinking chain
     /// for final answer generations
-    pub fn run(&mut self, parameters: InferenceParameters) -> Result<String, Error> {
+    pub fn run(&mut self, parameters: InferenceParameters) -> Result<Graph, Error> {
         // Fire up N thinking threads based on `tree_root_size`
         self.state.initialize_think_inputs(
             parameters.tree_root_size
         );
         
         loop {
-            // Check if the maximum depth is reached
-            if self.graph.depth() >= parameters.max_depth {
-                break;
+            // Check if there is only one active branch left
+            // Return if so.
+            if self.state.active_nodes.len() == 1 {
+                if let Some(branch) = self.graph.get_only_one_not_pruned()? {
+                    return Ok(branch);
+                }
             }
-            
+
             // LLM thinks the next steps/nodes
             let results: Vec<
                 (
@@ -295,23 +288,23 @@ impl Inference {
                 )
                 .collect();
             
-            for result in results {
-                let thought: Thought = match result.1 {
-                    Ok(thought) => thought,
+            for (input_index, thought, closeness) in results {
+                let thought: Thought = match thought {
+                    Ok(result) => result,
                     Err(e) => return Err(e),
                 };
 
-                let closeness: ClosenessToAnswer = match result.2 {
-                    Ok(closeness) => closeness,
+                let closeness: ClosenessToAnswer = match closeness {
+                    Ok(result) => result,
                     Err(e) => return Err(e),
                 };
 
                 // Create a new node in the graph
                 let index: usize = self.graph
-                    .new_node(closeness, thought);
+                    .new_node(closeness.clone(), thought);
                 
                 // Prune the steps/nodes that are not relevant
-                if closeness.into() < parameters.access_prune_threshold() {
+                if f32::from(closeness) < parameters.access_prune_threshold() {
                     self.state.remove(index);
                     self.graph.prune_branch(index);
                     
@@ -319,7 +312,7 @@ impl Inference {
                 }
                 
                 // Update the Graph
-                if let Some(previous_index) = result.0 {
+                if let Some(previous_index) = input_index {
                     self.graph.link_nodes(
                         previous_index, 
                         index
@@ -327,7 +320,5 @@ impl Inference {
                 }
             }
         }
-        
-        Ok(())
     }
 }
