@@ -47,14 +47,14 @@ impl Display for Instruction {
                     "Output in json. \nGoal: \n{}\nJSON Format: \n{}", 
                     self.goal, json
                 )
-            );
+            )?;
 
             return Ok(());
         }
 
         f.write_str(
             &format!("Goal: \n{}\nExample: \n{}", self.goal, self.example)
-        );
+        )?;
 
         return Ok(());
     }

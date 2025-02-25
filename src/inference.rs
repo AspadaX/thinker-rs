@@ -51,9 +51,10 @@ impl InferenceState {
         self.active_nodes.clear();
     }
 
+    /// Create N nodes for the tree root
     fn initialize_think_inputs(&mut self, tree_root_size: usize) {
-        for _ in 0..tree_root_size {
-            self.active_nodes.push(Some(0));
+        for index in 0..tree_root_size {
+            self.active_nodes.push(Some(index));
         }
     }
 }
@@ -241,13 +242,37 @@ impl Inference {
         };
         
         let response: CreateChatCompletionResponse = self.create_json(
-            thinking_prompt, branch
+            format!(
+                "User Query:\n{} \n{}", self.query, thinking_prompt
+            ), branch
         )?;
         
         Ok(
             serde_json::from_str(
                 &response.choices[0].message.content.as_ref().unwrap()
             )?
+        )
+    }
+    
+    fn think_in_parallel(
+        &self, 
+        branch: Option<usize>, 
+        tree_root_size: usize
+    ) -> Result<Vec<(Option<usize>, Result<Thought, Error>)>, Error> {
+        let nodes_range: std::ops::Range<usize> = 0..tree_root_size;
+        // LLM thinks the next steps/nodes
+        Ok(
+            nodes_range.into_par_iter()
+                .map(
+                    |_| {
+                        // Create nodes for N different thinking steps
+                        // this is based on the `tree_root_size`
+                        let thought = self.think(branch);
+                        
+                        (branch, thought)
+                    }
+                )
+                    .collect()
         )
     }
     
@@ -267,27 +292,21 @@ impl Inference {
                     return Ok(branch);
                 }
             }
-
-            // LLM thinks the next steps/nodes
-            let results: Vec<
-                (
-                    Option<usize>,
-                    Result<Thought, Error>, 
-                    Result<ClosenessToAnswer, Error>
-                )
-            > = self.state.active_nodes.par_iter()
+            
+            let results = self.state.active_nodes
+                .par_iter()
                 .map(
-                    |input| {
-                        // Create a thinking step
-                        let thought = self.think(*input);
-                        // LLM evaluates the closeness to the answer
-                        let closeness = self.evaluate_closeness_to_answer(*input);
-
-                        (*input, thought, closeness)
-                    }
+                    |branch| 
+                    self.think_in_parallel(
+                        *branch, 
+                        parameters.tree_root_size
+                    )
                 )
                 .collect();
             
+            // Clear the active nodes first, we will update it at the end
+            // of the inference process
+            self.state.clear();
             for (input_index, thought, closeness) in results {
                 let thought: Thought = match thought {
                     Ok(result) => result,
@@ -305,9 +324,7 @@ impl Inference {
                 
                 // Prune the steps/nodes that are not relevant
                 if f32::from(closeness) < parameters.access_prune_threshold() {
-                    self.state.remove(index);
                     self.graph.prune_branch(index);
-                    
                     continue;
                 }
                 
@@ -318,6 +335,9 @@ impl Inference {
                         index
                     );
                 }
+                
+                // Update the active nodes
+                self.state.add(index);
             }
         }
     }
