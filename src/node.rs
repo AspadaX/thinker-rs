@@ -28,11 +28,9 @@ impl Default for Node {
 
 impl Node {
     pub fn new(
-        closeness_to_answer: f32, 
         thought: String, 
     ) -> Self {
         Self {
-            closeness_to_answer, 
             thought, 
             ..Default::default()
         }
@@ -66,5 +64,10 @@ impl Node {
     
     pub fn access_thought(&self) -> &str {
         &self.thought
+    }
+    
+    /// Update closeness to answer
+    pub fn update_closeness(&mut self, closeness_to_answer: f32) {
+        self.closeness_to_answer = closeness_to_answer;
     }
 }

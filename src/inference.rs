@@ -1,3 +1,5 @@
+use std::{ops::Range, sync::{Arc, Mutex}};
+
 use anyhow::{anyhow, Error, Result};
 use async_openai::{config::OpenAIConfig, types::{ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequest, CreateChatCompletionRequestArgs, CreateChatCompletionResponse, ResponseFormat}, Client};
 use serde::{Deserialize, Serialize};
@@ -23,39 +25,6 @@ impl InferenceResult {
         }
         
         thoughts
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InferenceState {
-    /// Current active node indexes
-    active_nodes: Vec<Option<usize>>,
-}
-
-impl InferenceState {
-    pub fn new() -> Self {
-        Self {
-            active_nodes: Vec::new(),
-        }
-    }
-
-    pub fn add(&mut self, index: usize) {
-        self.active_nodes.push(Some(index));
-    }
-
-    pub fn remove(&mut self, index: usize) {
-        self.active_nodes.retain(|&i| i != Some(index));
-    }
-
-    pub fn clear(&mut self) {
-        self.active_nodes.clear();
-    }
-
-    /// Create N nodes for the tree root
-    fn initialize_think_inputs(&mut self, tree_root_size: usize) {
-        for index in 0..tree_root_size {
-            self.active_nodes.push(Some(index));
-        }
     }
 }
 
@@ -110,10 +79,8 @@ pub struct Inference {
     query: String,
     model: String,
     instructions: Vec<Instruction>,
-    graph: Graph,
+    graph: Arc<Mutex<Graph>>,
     client: Client<OpenAIConfig>,
-    /// Record the inference state
-    state: InferenceState,
 }
 
 impl Inference {
@@ -132,11 +99,10 @@ impl Inference {
 
         Self {
             instructions,
-            graph: Graph::new(), 
+            graph: Arc::new(Mutex::new(Graph::new())), 
             client,
             query,
             model,
-            state: InferenceState::new(),
         }
     }
     
@@ -170,7 +136,10 @@ impl Inference {
     }
     
     /// Create a structural output that is ready for access 
-    fn create_json(&self, prompt: String, branch: Option<usize>) -> Result<CreateChatCompletionResponse, Error> {
+    /// This will use the previous nodes as part of the prompt
+    fn create_json(&self, prompt: String, branch: usize) -> Result<CreateChatCompletionResponse, Error> {
+        let mut graph = self.graph.lock().unwrap();
+        
         // Store the messages, which are the other nodes of this branch
         let mut context = Vec::new();
         
@@ -180,18 +149,17 @@ impl Inference {
             .build()?
             .into());
         
-        if let Some(branch) = branch {
-            // Add the previous nodes to the context, if any
-            let nodes_indexes: Vec<usize> = self.graph.traverse(branch);
-            for node_index in nodes_indexes {
-                if let Some(node) = self.graph.access_node(node_index) {
-                    context.push(
-                        ChatCompletionRequestAssistantMessageArgs::default()
-                            .content(node.access_thought())
-                            .build()?
-                            .into()
-                    );
-                }
+        // Use the previous nodes as part of the prompt, if the branch
+        // Add the previous nodes to the context, if any
+        let nodes_indexes: Vec<usize> = graph.traverse(branch);
+        for node_index in nodes_indexes {
+            if let Some(node) = graph.access_node(node_index) {
+                context.push(
+                    ChatCompletionRequestAssistantMessageArgs::default()
+                        .content(node.access_thought())
+                        .build()?
+                        .into()
+                );
             }
         }
         
@@ -210,7 +178,7 @@ impl Inference {
     /// Evaluate how close the thinking step is to the final answer
     fn evaluate_closeness_to_answer(
         &self, 
-        branch: Option<usize>
+        branch: usize
     ) -> Result<ClosenessToAnswer, Error> {
         // Get the closeness prompt
         let closeness_prompt: String = if let Some(instruction) = self.access_instruction(PromptType::ClosenessToAnswer) {
@@ -233,7 +201,7 @@ impl Inference {
 
     /// Generate a thinking step with the LLM
     /// A None value in the `branch` indicates the first node of the graph.
-    fn think(&self, branch: Option<usize>) -> Result<Thought, Error> {
+    fn think(&self, branch: usize) -> Result<Thought, Error> {
         // Get the thinking prompt
         let thinking_prompt: String = if let Some(instruction) = self.access_instruction(PromptType::Thought) {
             instruction.to_string()
@@ -256,88 +224,120 @@ impl Inference {
     
     fn think_in_parallel(
         &self, 
-        branch: Option<usize>, 
+        branch: usize, 
         tree_root_size: usize
-    ) -> Result<Vec<(Option<usize>, Result<Thought, Error>)>, Error> {
+    ) -> Result<Vec<(usize, Thought)>, Error> {
         let nodes_range: std::ops::Range<usize> = 0..tree_root_size;
         // LLM thinks the next steps/nodes
-        Ok(
-            nodes_range.into_par_iter()
-                .map(
-                    |_| {
-                        // Create nodes for N different thinking steps
-                        // this is based on the `tree_root_size`
-                        let thought = self.think(branch);
-                        
-                        (branch, thought)
-                    }
-                )
-                    .collect()
-        )
+        let results: Vec<(usize, Result<Thought, Error>)> = nodes_range.into_par_iter()
+            .map(
+                |_| {
+                    // Create nodes for N different thinking steps
+                    // this is based on the `tree_root_size`
+                    let thought: Result<Thought, Error> = self.think(branch);
+                    
+                    (branch, thought)
+                }
+            )
+            .collect();
+        
+        let mut final_results: Vec<(usize, Thought)> = Vec::new();
+        for result in results {
+            let thought: Thought = result.1?;
+            final_results.push(
+                (result.0, thought)
+            );
+        }
+        
+        Ok(final_results)
     }
+    
+    /// Call this method before starting inferencing. It will create root nodes
+    /// for the session. 
+    fn initialize_root_nodes(&self, root_nodes_size: Range<usize>) -> Result<(), Error> {
+        let mut graph = self.graph.lock().unwrap();
+        // Collect the results of thinking in parallel for each active node
+        let results: Vec<Result<Vec<(usize, Thought)>, Error>> = root_nodes_size
+            .clone()
+            .into_par_iter()
+            .map(
+                |branch| 
+                self.think_in_parallel(
+                    branch, 
+                    root_nodes_size.end
+                )
+            )
+            .collect();
+        
+        // Add the new thoughts as nodes into the graph
+        // A None in `input_index` means that the thought is a root node.
+        for nodes_info in results {
+            let nodes_info = nodes_info?;
+            for (_, thought) in nodes_info {
+                let index: usize = graph.new_node(thought);
+                let closeness: ClosenessToAnswer = self.evaluate_closeness_to_answer(
+                    index
+                )?;
+                
+                // Update the node's closeness to the answer
+                if let Some(node) = graph.access_node(index) {
+                    node.update_closeness(closeness.into());
+                }
+            }
+        }
+        
+        Ok(())
+    } 
     
     /// Run the inference, return a final thinking chain
     /// for final answer generations
     pub fn run(&mut self, parameters: InferenceParameters) -> Result<Graph, Error> {
-        // Fire up N thinking threads based on `tree_root_size`
-        self.state.initialize_think_inputs(
-            parameters.tree_root_size
-        );
+        let root_nodes: Range<usize> = 0..parameters.tree_root_size;
+        self.initialize_root_nodes(root_nodes)?;
         
         loop {
+            let mut graph = self.graph.lock().unwrap();
+            
             // Check if there is only one active branch left
             // Return if so.
-            if self.state.active_nodes.len() == 1 {
-                if let Some(branch) = self.graph.get_only_one_not_pruned()? {
-                    return Ok(branch);
-                }
+            if let Some(branch) = graph.get_only_one_not_pruned()? {
+                return Ok(branch);
             }
             
-            let results = self.state.active_nodes
-                .par_iter()
+            // Collect the results of thinking in parallel for each active node
+            let results: Vec<Result<Vec<(usize, Thought)>, Error>> = graph
+                .get_active_nodes()                
+                .into_par_iter()
                 .map(
-                    |branch| 
+                    |node_index| 
                     self.think_in_parallel(
-                        *branch, 
+                        node_index, 
                         parameters.tree_root_size
                     )
                 )
                 .collect();
             
-            // Clear the active nodes first, we will update it at the end
-            // of the inference process
-            self.state.clear();
-            for (input_index, thought, closeness) in results {
-                let thought: Thought = match thought {
-                    Ok(result) => result,
-                    Err(e) => return Err(e),
-                };
-
-                let closeness: ClosenessToAnswer = match closeness {
-                    Ok(result) => result,
-                    Err(e) => return Err(e),
-                };
-
-                // Create a new node in the graph
-                let index: usize = self.graph
-                    .new_node(closeness.clone(), thought);
-                
-                // Prune the steps/nodes that are not relevant
-                if f32::from(closeness) < parameters.access_prune_threshold() {
-                    self.graph.prune_branch(index);
-                    continue;
+            // Add the new thoughts as nodes into the graph
+            // A None in `input_index` means that the thought is a root node.
+            let mut nodes_infos: Vec<Vec<(usize, Thought)>> = Vec::new();
+            for nodes_info in results {
+                let nodes_info = nodes_info?;
+                nodes_infos.push(nodes_info);
+            }
+            
+            for nodes in nodes_infos {
+                for (previous_node_index, thought) in nodes {
+                    // Create a new node in the graph
+                    let index: usize = graph.new_node(thought);
+                    
+                    let closeness: ClosenessToAnswer = self.evaluate_closeness_to_answer(index)?;
+                    if let Some(node) = graph.access_node(index) {
+                        node.update_closeness(closeness.into()); 
+                    }
+                    
+                    // Link the node with the previous one
+                    graph.link_nodes(previous_node_index, index);
                 }
-                
-                // Update the Graph
-                if let Some(previous_index) = input_index {
-                    self.graph.link_nodes(
-                        previous_index, 
-                        index
-                    );
-                }
-                
-                // Update the active nodes
-                self.state.add(index);
             }
         }
     }

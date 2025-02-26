@@ -22,11 +22,9 @@ impl Graph {
     /// Create a new node in the graph
     pub fn new_node(
         &mut self,
-        closeness_to_answer: ClosenessToAnswer, 
         thought: Thought, 
     ) -> usize {
         let node = Node::new(
-            closeness_to_answer.into(), 
             thought.to_string()
         );
         self.nodes.push(node);
@@ -110,8 +108,8 @@ impl Graph {
     }
     
     /// Access a node by its index
-    pub fn access_node(&self, index: usize) -> Option<&Node> {
-        self.nodes.get(index)
+    pub fn access_node(&mut self, index: usize) -> Option<&mut Node> {
+        self.nodes.get_mut(index)
     }
     
     /// Prune a branch
@@ -159,6 +157,19 @@ impl Graph {
         }
 
         branches
+    }
+    
+    /// Get the end nodes indexes that are not yet pruned
+    pub fn get_active_nodes(&self) -> Vec<usize> {
+        let mut active_nodes: Vec<usize> = Vec::new();
+        let _ = self.nodes.iter().enumerate()
+            .map(|(index, node)| {
+                if node.get_next().is_none() && !node.is_pruned() {
+                    active_nodes.push(index);
+                }
+            });
+
+        active_nodes
     }
 
     /// Save the graph to a local position
