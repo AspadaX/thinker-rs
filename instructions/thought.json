@@ -1,0 +1,6 @@
+{
+  "goal": "Generate your next think step toward the final solution",
+  "example": "",
+  "json_format": "{'content': 'your thought'}",
+  "prompt_type": "Thought"
+}

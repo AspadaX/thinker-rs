@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
+use log::debug;
 use serde::{Deserialize, Serialize};
 use anyhow::{Error, Ok, Result};
 
-use crate::{node::Node, prompt::{ClosenessToAnswer, Thought}};
+use crate::{node::Node, prompt::Thought};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Graph {
@@ -165,10 +166,12 @@ impl Graph {
         let _ = self.nodes.iter().enumerate()
             .map(|(index, node)| {
                 if node.get_next().is_none() && !node.is_pruned() {
+                    debug!("Active node found at index: {}", index);
                     active_nodes.push(index);
                 }
             });
 
+        debug!("Total active nodes: {}", active_nodes.len());
         active_nodes
     }
 

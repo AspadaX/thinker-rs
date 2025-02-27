@@ -62,7 +62,6 @@ impl Display for Instruction {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Thought {
-    reasoning: String,
     content: String
 }
 
@@ -82,6 +81,7 @@ impl Display for Thought {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClosenessToAnswer {
+    reasoning: String,
     score: f32
 }
 
