@@ -87,19 +87,31 @@ impl Graph {
 
         Ok(None)
     }
-
-    /// Get all nodes on the same branch
-    pub fn traverse(&self, start: usize) -> Vec<usize> {
+    
+    /// Get a graph (branch) based on the input of an end node index
+    pub fn get_branch_from_end_node(&self, end_node_index: usize) -> Result<Graph, Error> {
+        let branch_indexes = self.traverse_reverse(end_node_index);
+        let mut nodes = Vec::new();
+        for index in branch_indexes {
+            if let Some(node) = self.nodes.get(index) {
+                nodes.push(node.to_owned());
+            }
+        }
+        Ok(Graph::from_vec(nodes))
+    }
+    
+    /// Get all nodes on the same branch by traversing in reverse order
+    pub fn traverse_reverse(&self, end: usize) -> Vec<usize> {
         let mut visited: HashSet<usize> = HashSet::new();
-        let mut stack: Vec<usize> = vec![start];
+        let mut stack: Vec<usize> = vec![end];
         let mut branch_nodes_indexes: Vec<usize> = Vec::new();
 
         while let Some(node_index) = stack.pop() {
             if visited.insert(node_index) {
                 branch_nodes_indexes.push(node_index);
                 if let Some(node) = self.nodes.get(node_index) {
-                    if let Some(next_index) = node.get_next() {
-                        stack.push(next_index);
+                    if let Some(previous_index) = node.get_previous() {
+                        stack.push(previous_index);
                     }
                 }
             }
@@ -120,22 +132,6 @@ impl Graph {
         }
     }
     
-    /// Get the depth of the graph. 
-    /// The depth of a graph is the maximum depth of any branch in the graph.
-    pub fn depth(&self) -> usize {
-        let branches = self.get_branches();
-
-        let mut maximum_depth: usize = 0;
-        for branch in branches {
-            let depth = branch.len();
-            if depth > maximum_depth {
-                maximum_depth = depth;
-            }
-        }
-        
-        maximum_depth
-    }
-    
     /// Get all branches in the graph.
     /// A branch is defined as a sequence of nodes starting from a node with no previous node
     /// and following the next nodes until the end of the branch.
@@ -153,26 +149,25 @@ impl Graph {
 
         let mut branches: Vec<Vec<usize>> = Vec::new();
         for index in start_nodes_index {
-            let branch = self.traverse(index);
+            let branch = self.traverse_reverse(index);
             branches.push(branch);
         }
 
         branches
     }
     
-    /// Get the end nodes indexes that are not yet pruned
-    pub fn get_active_nodes(&self) -> Vec<usize> {
-        let mut active_nodes: Vec<usize> = Vec::new();
-        let _ = self.nodes.iter().enumerate()
-            .map(|(index, node)| {
-                if node.get_next().is_none() && !node.is_pruned() {
-                    debug!("Active node found at index: {}", index);
-                    active_nodes.push(index);
-                }
-            });
+    /// Get the end nodes (active nodes) indexes that are not yet pruned
+    pub fn get_end_nodes(&self) -> Vec<usize> {
+        let mut end_nodes: Vec<usize> = Vec::new();
+        for (index, node) in self.nodes.iter().enumerate() {
+            if node.get_next().is_none() && !node.is_pruned() {
+                debug!("End node found at index: {}", index);
+                end_nodes.push(index);
+            }
+        }
 
-        debug!("Total active nodes: {}", active_nodes.len());
-        active_nodes
+        debug!("Total end nodes: {}", end_nodes.len());
+        end_nodes
     }
 
     /// Save the graph to a local position

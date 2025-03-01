@@ -1,5 +1,5 @@
 {
-  "goal": "Generate your next think step toward the final solution",
+  "goal": "Based on the context if any. Generate your next think step toward the final solution. Just one step ahead. You don't need to think too much.",
   "example": "",
   "json_format": "{'content': 'your thought'}",
   "prompt_type": "Thought"

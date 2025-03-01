@@ -70,4 +70,8 @@ impl Node {
     pub fn update_closeness(&mut self, closeness_to_answer: f32) {
         self.closeness_to_answer = closeness_to_answer;
     }
+    
+    pub fn get_closeness(&self) -> f32 {
+        self.closeness_to_answer
+    }
 }

@@ -14,7 +14,8 @@ fn main() -> Result<(), Error> {
 
     let parameters = InferenceParameters::new(
         3, 
-        5.0
+        5.0,
+        Some(3)
     );
     log::info!("Inference parameters set: {:?}", parameters);
 
@@ -22,7 +23,7 @@ fn main() -> Result<(), Error> {
         "http://192.168.0.101:11434/v1".to_string(), 
         "1".to_string(), 
         instructions, 
-        "How to get to New York from Nanjing with the cheapest cost?".to_string(), 
+        "How many vertical asymptotes does the graph of $y=\\frac{2}{x^2+x-6}$ have?".to_string(), 
         "mistral".to_string()
     );
     log::info!("Inference object created: {:?}", inference);

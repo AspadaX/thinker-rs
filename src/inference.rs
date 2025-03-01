@@ -5,6 +5,8 @@ use async_openai::{config::OpenAIConfig, types::{ChatCompletionRequestAssistantM
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use rayon::prelude::*;
+use tokio::runtime::Runtime;
+use rand::{rng, Rng};
 
 use crate::{graph::Graph, node::Node, prompt::{ClosenessToAnswer, Instruction, PromptType, Thought}};
 
@@ -37,13 +39,16 @@ pub struct InferenceParameters {
     /// The prune threshold for the tree. Larger indicates more
     /// possibilities, but also more computation costs.
     prune_threshold: f32,
+    /// Maximum depth that the model can reach. Leave `None` for unlimited depth.
+    max_depth: Option<usize>,
 }
 
 impl Default for InferenceParameters {
     fn default() -> Self {
         Self {
             tree_root_size: 10,
-            prune_threshold: 0.5,
+            prune_threshold: 6.0,
+            max_depth: None
         }
     }
 }
@@ -52,19 +57,25 @@ impl InferenceParameters {
     pub fn new(
         tree_root_size: usize, 
         prune_threshold: f32, 
+        max_depth: Option<usize>
     ) -> Self {
         Self {
             tree_root_size,
             prune_threshold,
+            max_depth
         }
     }
 
-    pub fn access_tree_root_size(&self) -> usize {
+    pub fn get_tree_root_size(&self) -> usize {
         self.tree_root_size
     }
 
-    pub fn access_prune_threshold(&self) -> f32 {
+    pub fn get_prune_threshold(&self) -> f32 {
         self.prune_threshold
+    }
+    
+    pub fn get_max_depth(&self) -> Option<usize> {
+        self.max_depth
     }
 }
 
@@ -83,6 +94,7 @@ pub struct Inference {
     instructions: Vec<Instruction>,
     graph: Arc<RwLock<Graph>>,
     client: Client<OpenAIConfig>,
+    runtime: Runtime,
 }
 
 impl Inference {
@@ -105,6 +117,7 @@ impl Inference {
             client,
             query,
             model,
+            runtime: Runtime::new().unwrap(),
         }
     }
     
@@ -122,8 +135,7 @@ impl Inference {
         &self, 
         request: CreateChatCompletionRequest
     ) -> Result<CreateChatCompletionResponse, Error> {
-        let async_runtime = tokio::runtime::Runtime::new().unwrap();
-        let result: CreateChatCompletionResponse = async_runtime.block_on(
+        let result: CreateChatCompletionResponse = self.runtime.block_on(
             async move {
                 let response: CreateChatCompletionResponse = self.client
                     .chat()
@@ -135,6 +147,13 @@ impl Inference {
         )?;
         
         Ok(result)
+    }
+    
+    /// Get a random seed for the inference session
+    fn get_seed(&self) -> u32 {
+        let mut random: rand::prelude::ThreadRng = rng();
+        
+        random.random()
     }
     
     /// Create a structural output that is ready for access 
@@ -154,7 +173,7 @@ impl Inference {
 
         // Use the previous nodes as part of the prompt, if the branch
         // Add the previous nodes to the context, if any
-        let nodes_indexes: Vec<usize> = self.graph.read().unwrap().traverse(branch);
+        let nodes_indexes: Vec<usize> = self.graph.read().unwrap().traverse_reverse(branch);
         log::debug!("Traversed nodes for branch {}: {:?}", branch, nodes_indexes);
         for node_index in nodes_indexes {
             if let Some(node) = self.graph.write().unwrap().access_node(node_index) {
@@ -170,6 +189,7 @@ impl Inference {
 
         // Create message for sending to the LLM
         let request: CreateChatCompletionRequest = CreateChatCompletionRequestArgs::default()
+            .seed(self.get_seed())
             .model(&self.model)
             .response_format(ResponseFormat::JsonObject)
             .messages(context)
@@ -230,21 +250,28 @@ impl Inference {
 
         log::debug!("Thinking prompt: {}", thinking_prompt);
 
-        let response: CreateChatCompletionResponse = self.create_json(
-            format!(
-                "User Query:\n{} \n{}", self.query, thinking_prompt
-            ), branch
-        )?;
+        loop {
+            let response: CreateChatCompletionResponse = self.create_json(
+                format!(
+                    "User Query:\n{} \n{}", self.query, thinking_prompt
+                ), branch
+            )?;
 
-        log::debug!("Received response for branch: {}", branch);
+            log::debug!("Received response for branch: {}", branch);
 
-        let thought: Thought = serde_json::from_str(
-            &response.choices[0].message.content.as_ref().unwrap()
-        )?;
-
-        log::debug!("Parsed thought for branch: {}", branch);
-
-        Ok(thought)
+            match serde_json::from_str(
+                &response.choices[0].message.content.as_ref().unwrap()
+            ) {
+                Ok(thought) => {
+                    log::debug!("Parsed thought for branch: {}", branch);
+                    return Ok(thought);
+                },
+                Err(error) => {
+                    error!("Failed to parse JSON response: {}, will attempt a retry...", error);
+                    continue;
+                }
+            };
+        }
     }
     
     fn think_in_parallel(
@@ -336,10 +363,6 @@ impl Inference {
         loop {
             info!("Thinking depth has reached {}", depth);
             
-            if depth == 10 {
-                panic!();
-            }
-            
             // Check if there is only one active branch left
             // Return if so.
             if let Some(branch) = self.graph.read().unwrap().get_only_one_not_pruned()? {
@@ -348,10 +371,35 @@ impl Inference {
             }
             
             // Get the active nodes
-            let active_nodes: Vec<usize> = self.graph.read().unwrap().get_active_nodes();
+            let active_nodes: Vec<usize> = self.graph.read().unwrap().get_end_nodes();
             debug!("Active nodes count: {}", active_nodes.len());
             debug!("Nodes: {:?}", self.graph.read().unwrap());
 
+            // Return if the depth has already reached the maximum depth
+            // Return the last highest scored node
+            if Some(depth) == parameters.max_depth {
+                info!("Reached maximum depth of {:?}", parameters.max_depth);
+                let mut highest_scored_node_index: usize = 0;
+                let mut highest_scored_node_score: f32 = 0.0;
+                for node_index in active_nodes.iter() {
+                    let mut graph: std::sync::RwLockWriteGuard<'_, Graph> = self.graph
+                        .write()
+                        .unwrap();
+                    let node: Option<&mut Node> = graph.access_node(*node_index);
+                    if let Some(node) = node {
+                        if node.get_closeness() > highest_scored_node_score {
+                            highest_scored_node_index = *node_index;
+                            highest_scored_node_score = node.get_closeness();
+                        }
+                    }
+                }
+                
+                let branch: Graph = self.graph.read().unwrap()
+                    .get_branch_from_end_node(highest_scored_node_index)?;
+                
+                return Ok(branch);
+            }
+            
             // Collect the results of thinking in parallel for each active node
             let results: Vec<Result<Vec<(usize, Thought)>, Error>> = active_nodes
                 .into_par_iter()
