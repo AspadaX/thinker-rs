@@ -169,7 +169,11 @@ impl Graph {
         debug!("Total end nodes: {}", end_nodes.len());
         end_nodes
     }
-
+    
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+    
     /// Save the graph to a local position
     pub fn save(&self, path: &str) -> Result<(), Error> {
         let json = serde_json::to_string_pretty(&self)?;

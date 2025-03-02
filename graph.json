@@ -1,0 +1,25 @@
+{
+  "nodes": [
+    {
+      "thought": "Identify values of x that make the denominator zero, by finding the solutions for x^2 + x - 6 = 0.",
+      "closeness_to_answer": 10.0,
+      "is_pruned": false,
+      "next_node_index": null,
+      "previous_node_index": 9
+    },
+    {
+      "thought": "Find solutions for x^2 + x - 6 = 0 and identify as possible vertical asymptotes.",
+      "closeness_to_answer": 10.0,
+      "is_pruned": false,
+      "next_node_index": 38,
+      "previous_node_index": 0
+    },
+    {
+      "thought": "Let us determine the possible values of x where the function is undefined (x intercepts for the denominator). This will help us find vertical asymptotes. In this case, those points are solutions of the quadratic equation x^2 + x - 6 = 0.",
+      "closeness_to_answer": 10.0,
+      "is_pruned": false,
+      "next_node_index": 11,
+      "previous_node_index": null
+    }
+  ]
+}

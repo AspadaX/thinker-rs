@@ -2,7 +2,8 @@ use std::{ops::Range, sync::{Arc, RwLock}};
 
 use anyhow::{anyhow, Error, Result};
 use async_openai::{config::OpenAIConfig, types::{ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage, ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequest, CreateChatCompletionRequestArgs, CreateChatCompletionResponse, ResponseFormat}, Client};
-use log::{debug, error, info};
+use console::Term;
+use log::info;
 use serde::{Deserialize, Serialize};
 use rayon::prelude::*;
 use tokio::runtime::Runtime;
@@ -80,13 +81,6 @@ impl InferenceParameters {
 }
 
 /// LLM inference with tree of thoughts
-/// Step 1: get the user query. 
-/// Step 2: LLM think for multiple branches to resolve the query, they are the 
-/// first batch of nodes.
-/// Step 3: Iterate over the nodes and generate the next batch of nodes.
-/// until the LLM reaches the only branch that is feasible.
-/// Step 4: Collect the user query and the branch's thoughts, 
-/// throw that into a model for generating the final answer. 
 #[derive(Debug)]
 pub struct Inference {
     query: String,
@@ -159,25 +153,14 @@ impl Inference {
     /// Create a structural output that is ready for access 
     /// This will use the previous nodes as part of the prompt
     fn create_json(&self, prompt: String, branch: usize) -> Result<CreateChatCompletionResponse, Error> {
-        log::debug!("Creating JSON for branch: {}", branch);
-
         // Store the messages, which are the other nodes of this branch
         let mut context: Vec<ChatCompletionRequestMessage> = Vec::new();
-
-        // Add the prompt to the context
-        log::debug!("Adding prompt to context: {}", prompt);
-        context.push(ChatCompletionRequestUserMessageArgs::default()
-            .content(prompt)
-            .build()?
-            .into());
 
         // Use the previous nodes as part of the prompt, if the branch
         // Add the previous nodes to the context, if any
         let nodes_indexes: Vec<usize> = self.graph.read().unwrap().traverse_reverse(branch);
-        log::debug!("Traversed nodes for branch {}: {:?}", branch, nodes_indexes);
         for node_index in nodes_indexes {
             if let Some(node) = self.graph.write().unwrap().access_node(node_index) {
-                log::debug!("Adding node {} thought to context: {}", node_index, node.access_thought());
                 context.push(
                     ChatCompletionRequestAssistantMessageArgs::default()
                         .content(node.access_thought())
@@ -186,6 +169,13 @@ impl Inference {
                 );
             }
         }
+        
+        // Add the prompt to the context
+        context.push(ChatCompletionRequestUserMessageArgs::default()
+            .content(prompt)
+            .build()?
+            .into());
+        info!("{:?}", &context);
 
         // Create message for sending to the LLM
         let request: CreateChatCompletionRequest = CreateChatCompletionRequestArgs::default()
@@ -195,9 +185,7 @@ impl Inference {
             .messages(context)
             .build()?;
 
-        log::debug!("Sending request to LLM for branch: {}", branch);
         let response: CreateChatCompletionResponse = self.generate(request)?;
-        log::debug!("Received response from LLM for branch: {}", branch);
 
         Ok(response)
     }
@@ -207,28 +195,21 @@ impl Inference {
         &self, 
         branch: usize
     ) -> Result<ClosenessToAnswer, Error> {
-        log::debug!("Evaluating closeness to answer for branch: {}", branch);
-
         // Get the closeness prompt
         let closeness_prompt: String = if let Some(instruction) = self.access_instruction(PromptType::ClosenessToAnswer) {
             instruction.to_string()
         } else {
-            log::error!("ClosenessToAnswer instruction is not found!");
             return Err(anyhow!("ClosenessToAnswer instruction is not found!"));
         };
 
-        log::debug!("Closeness prompt: {}", closeness_prompt);
-
         loop {
             let response: CreateChatCompletionResponse = self.create_json(closeness_prompt.clone(), branch)?;
-            log::debug!("Received response for closeness to answer for branch: {}", branch);
             
             match serde_json::from_str(
                 &response.choices[0].message.content.as_ref().unwrap()
             ) {
                 Ok(result) => return Ok(result),
-                Err(error) => {
-                    error!("Failed to parse JSON response: {}, will attempt a retry...", error);
+                Err(_) => {
                     continue;
                 }
             };
@@ -238,17 +219,12 @@ impl Inference {
     /// Generate a thinking step with the LLM
     /// A None value in the `branch` indicates the first node of the graph.
     fn think(&self, branch: usize) -> Result<Thought, Error> {
-        log::debug!("Starting think for branch: {}", branch);
-
         // Get the thinking prompt
         let thinking_prompt: String = if let Some(instruction) = self.access_instruction(PromptType::Thought) {
             instruction.to_string()
         } else {
-            log::error!("Think instruction is not found!");
             return Err(anyhow!("Think instruction is not found!"));
         };
-
-        log::debug!("Thinking prompt: {}", thinking_prompt);
 
         loop {
             let response: CreateChatCompletionResponse = self.create_json(
@@ -257,17 +233,13 @@ impl Inference {
                 ), branch
             )?;
 
-            log::debug!("Received response for branch: {}", branch);
-
             match serde_json::from_str(
                 &response.choices[0].message.content.as_ref().unwrap()
             ) {
                 Ok(thought) => {
-                    log::debug!("Parsed thought for branch: {}", branch);
                     return Ok(thought);
                 },
-                Err(error) => {
-                    error!("Failed to parse JSON response: {}, will attempt a retry...", error);
+                Err(_) => {
                     continue;
                 }
             };
@@ -312,15 +284,12 @@ impl Inference {
     /// Call this method before starting inferencing. It will create root nodes
     /// for the session. 
     fn initialize_root_nodes(&self, root_nodes_size: Range<usize>) -> Result<(), Error> {
-        log::debug!("Initializing root nodes with size: {:?}", root_nodes_size);
-
         // Collect the results of thinking in parallel for each active node
         let results: Vec<Result<Vec<(usize, Thought)>, Error>> = root_nodes_size
             .clone()
             .into_par_iter()
             .map(
                 |branch| {
-                    log::debug!("Thinking in parallel for branch: {}", branch);
                     self.think_in_parallel(
                         branch, 
                         root_nodes_size.end
@@ -335,112 +304,120 @@ impl Inference {
             let nodes_info = nodes_info?;
             for (_, thought) in nodes_info {
                 let index: usize = self.graph.write().unwrap().new_node(thought);
-                log::debug!("Created new node with index: {}", index);
 
                 let closeness: ClosenessToAnswer = self.evaluate_closeness_to_answer(index)?;
-                log::debug!("Evaluated closeness to answer for node {}: {:?}", index, closeness);
 
                 // Update the node's closeness to the answer
                 if let Some(node) = self.graph.write().unwrap().access_node(index) {
                     node.update_closeness(closeness.clone().into());
-                    log::debug!("Updated node {} with closeness to answer: {:?}", index, closeness);
                 }
             }
         }
 
-        log::debug!("Completed initializing root nodes.");
         Ok(())
     } 
     
     /// Run the inference, return a final thinking chain
     /// for final answer generations
     pub fn run(&mut self, parameters: InferenceParameters) -> Result<Graph, Error> {
-        log::debug!("Starting inference run with parameters: {:?}", parameters);
+        let terminal = Term::stdout();
         let root_nodes: Range<usize> = 0..parameters.tree_root_size;
         self.initialize_root_nodes(root_nodes)?;
+        terminal.write_line(
+            &console::style("🌳 Starting inference tree").cyan().to_string()
+        )?;
 
         let mut depth: usize = 1;
-        loop {
-            info!("Thinking depth has reached {}", depth);
-            
-            // Check if there is only one active branch left
-            // Return if so.
-            if let Some(branch) = self.graph.read().unwrap().get_only_one_not_pruned()? {
-                log::debug!("Only one active branch left, returning the branch.");
-                return Ok(branch);
-            }
-            
-            // Get the active nodes
-            let active_nodes: Vec<usize> = self.graph.read().unwrap().get_end_nodes();
-            debug!("Active nodes count: {}", active_nodes.len());
-            debug!("Nodes: {:?}", self.graph.read().unwrap());
+        let pb = indicatif::ProgressBar::new_spinner();
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
-            // Return if the depth has already reached the maximum depth
-            // Return the last highest scored node
-            if Some(depth) == parameters.max_depth {
-                info!("Reached maximum depth of {:?}", parameters.max_depth);
-                let mut highest_scored_node_index: usize = 0;
-                let mut highest_scored_node_score: f32 = 0.0;
-                for node_index in active_nodes.iter() {
-                    let mut graph: std::sync::RwLockWriteGuard<'_, Graph> = self.graph
-                        .write()
-                        .unwrap();
-                    let node: Option<&mut Node> = graph.access_node(*node_index);
-                    if let Some(node) = node {
-                        if node.get_closeness() > highest_scored_node_score {
-                            highest_scored_node_index = *node_index;
-                            highest_scored_node_score = node.get_closeness();
-                        }
-                    }
-                }
-                
-                let branch: Graph = self.graph.read().unwrap()
-                    .get_branch_from_end_node(highest_scored_node_index)?;
-                
+        loop {
+            pb.set_message(format!("Depth {}: Checking branches", depth));
+
+            if let Some(branch) = self.graph.read().unwrap().get_only_one_not_pruned()? {
+                pb.finish_with_message("🎯 Found single active branch");
+                terminal.write_line(
+                    &console::style(format!("✨ Completed at depth {} with single branch", depth)).green().to_string()
+                )?;
                 return Ok(branch);
             }
-            
-            // Collect the results of thinking in parallel for each active node
+
+            let active_nodes: Vec<usize> = self.graph.read().unwrap().get_end_nodes();
+            pb.set_message(format!("Depth {}: {} active nodes", depth, active_nodes.len()));
+
+            if Some(depth) == parameters.max_depth {
+                pb.finish_with_message("📏 Max depth reached");
+                terminal.write_line(
+                    &console::style(format!("🧠 Choosing best node from {} candidates", active_nodes.len())).yellow().to_string()
+                )?;
+
+                let (highest_index, highest_score) = active_nodes.iter()
+                    .fold((0, 0.0), |(max_idx, max_score), &idx| {
+                        let score: f32 = self.graph.write().unwrap().access_node(idx)
+                            .map(|n| n.get_closeness())
+                            .unwrap_or(0.0);
+                        if score > max_score { (idx, score) } else { (max_idx, max_score) }
+                    });
+
+                let branch = self.graph.read().unwrap()
+                    .get_branch_from_end_node(highest_index)?;
+
+                terminal.write_line(
+                    &console::style(format!("🏆 Best node score: {:.2}", highest_score)).green().to_string()
+                )?;
+                return Ok(branch);
+            }
+
+            let processing_bar = indicatif::ProgressBar::new(active_nodes.len() as u64);
+            processing_bar.set_style(indicatif::ProgressStyle::default_bar()
+                .template("{spinner} [{bar:40.cyan/blue}] {pos}/{len} nodes processed")
+                .unwrap()
+                .progress_chars("##-"));
+
             let results: Vec<Result<Vec<(usize, Thought)>, Error>> = active_nodes
                 .into_par_iter()
-                .map(
-                    |node_index| {
-                        log::debug!("Thinking in parallel for node index: {}", node_index);
-                        self.think_in_parallel(
-                            node_index, 
-                            parameters.tree_root_size
-                        )
-                    }
-                )
+                .map(|node_index| {
+                    processing_bar.inc(1);
+                    self.think_in_parallel(node_index, parameters.tree_root_size)
+                })
                 .collect();
 
-            // Add the new thoughts as nodes into the graph
-            // A None in `input_index` means that the thought is a root node.
+            processing_bar.finish_and_clear();
+            terminal.write_line(
+                &console::style(format!("🌱 Generated {} node groups", results.len())).dim().to_string()
+            )?;
+
             let mut nodes_infos: Vec<Vec<(usize, Thought)>> = Vec::new();
             for nodes_info in results {
-                let nodes_info = nodes_info?;
-                nodes_infos.push(nodes_info);
+                nodes_infos.push(nodes_info?);
             }
+
+            let total_new_nodes = nodes_infos.iter().map(|v| v.len()).sum::<usize>();
+            let node_bar = indicatif::ProgressBar::new(total_new_nodes as u64);
+            node_bar.set_style(indicatif::ProgressStyle::default_bar()
+                .template("{spinner} [{bar:40.magenta/blue}] {pos}/{len} nodes evaluated")
+                .unwrap()
+                .progress_chars("##-"));
 
             for nodes in nodes_infos {
                 for (previous_node_index, thought) in nodes {
-                    // Create a new node in the graph
                     let index: usize = self.graph.write().unwrap().new_node(thought);
-                    log::debug!("Created new node with index: {}", index);
+                    node_bar.inc(1);
 
                     let closeness: ClosenessToAnswer = self.evaluate_closeness_to_answer(index)?;
                     if let Some(node) = self.graph.write().unwrap().access_node(index) {
                         node.update_closeness(closeness.clone().into());
-                        log::debug!("Updated node {} with closeness to answer: {:?}", index, closeness);
                     }
 
-                    // Link the node with the previous one
                     self.graph.write().unwrap().link_nodes(previous_node_index, index);
-                    log::debug!("Linked node {} with previous node {}", index, previous_node_index);
                 }
             }
-            
-            // Increment the depth counter
+
+            node_bar.finish_and_clear();
+            terminal.write_line(
+                &console::style(format!("📈 Depth {} completed with {} total nodes", depth, self.graph.read().unwrap().len())).cyan().to_string()
+            )?;
+
             depth += 1;
         }
     }
