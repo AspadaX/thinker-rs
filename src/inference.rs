@@ -3,8 +3,7 @@ use std::{ops::Range, sync::{Arc, RwLock}};
 use anyhow::{anyhow, Error, Result};
 use async_openai::{config::OpenAIConfig, types::{ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage, ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequest, CreateChatCompletionRequestArgs, CreateChatCompletionResponse, ResponseFormat}, Client};
 use console::Term;
-use indicatif::{ProgressBar, ProgressStyle, TermLike};
-use log::info;
+use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use rayon::prelude::*;
 use tokio::runtime::Runtime;
@@ -418,8 +417,6 @@ impl Inference {
                 &console::style(format!("📈 Depth {} completed with {} total nodes", depth, self.graph.read().unwrap().len())).cyan().to_string()
             )?;
 
-            depth += 1;
-            
             if Some(depth) == parameters.max_depth {
                 pb.finish_with_message("📏 Max depth reached");
                 self.terminal.write().unwrap().write_line(
@@ -442,6 +439,8 @@ impl Inference {
                 )?;
                 return Ok(branch);
             }
+            
+            depth += 1;
         }
     }
 }
