@@ -1,6 +1,6 @@
 {
-  "goal": "Based on the current context (if any), generate the next logical step that directly builds on the previous progress. Ensure your step introduces a new action, computation, or insight (e.g., factoring, applying a theorem, simplifying expressions, or analyzing results) to advance toward the solution. Avoid repeating prior work.",
-  "example": "",
+  "goal": "Based on the current context (if any), generate the next step that directly builds on the previous progress. Ensure your step introduces a new action, computation, or insight (e.g., question the previous thinking step(s), propose an alternative, make a draft, factoring, applying a theorem, simplifying expressions, or analyzing results) to advance toward the solution. Avoid repeating prior work.",
+  "example": "Suppose we're solving the equation $ x^2 - 5x + 6 = 0 $. After factoring it into $ (x-2)(x-3) = 0 $, the next step could be: ​**Question**​ whether the factoring is correct by expanding $ (x-2)(x-3) $. If confirmed, ​**propose an alternative**​ approach (e.g., quadratic formula) to verify consistency. Then, ​**analyze results**​ by substituting $ x=2 $ and $ x=3 $ into the original equation to check validity.",
   "json_format": "{'content': 'your thought'}",
   "prompt_type": "Thought"
 }

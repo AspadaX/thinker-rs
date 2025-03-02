@@ -13,8 +13,8 @@ fn main() -> Result<(), Error> {
 
     let parameters = InferenceParameters::new(
         3, 
-        5.0,
-        Some(3)
+        Some(10),
+        0.8
     );
     terminal.write_line(
         &console::style(
@@ -37,9 +37,10 @@ fn main() -> Result<(), Error> {
     terminal.write_line(&console::style("Inference object created.").green().to_string())?;
 
     let graph: Graph = inference.run(parameters)?;
-    terminal.write_line(&console::style(format!("Inference run completed. Graph: {:?}", graph)).green().to_string())?;
     
-    graph.save("./graph.json")?;
+    graph.save("./end_graph.json")?;
+    inference.save("./all_graph.json")?;
+    terminal.write_line(&console::style("Graph has been saved.").green().to_string())?;
 
     Ok(())
 }

@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use log::debug;
 use serde::{Deserialize, Serialize};
 use anyhow::{Error, Ok, Result};
 
@@ -131,6 +130,26 @@ impl Graph {
             node.set_pruned();
         }
     }
+    /// Prune the lowest scored branches by percentage
+    pub fn prune_branch_by_percentage(&mut self, percentile_to_prune: f32) {
+        let end_nodes_indexes: Vec<usize> = self.get_end_nodes();
+        let mut end_nodes: Vec<&Node> = Vec::new();
+        for (index, node) in self.nodes.iter().enumerate() {
+            if end_nodes_indexes.contains(&index) {
+                end_nodes.push(node);
+            }
+        }
+        
+        end_nodes.sort_by(
+            |a, b| 
+            a.get_closeness().partial_cmp(&b.get_closeness()).unwrap()
+        );
+        
+        let num_to_prune = (end_nodes.len() as f32 * percentile_to_prune) as usize;
+        for node_index in end_nodes_indexes.iter().take(num_to_prune) {
+            self.prune_branch(*node_index);
+        }
+    }
     
     /// Get all branches in the graph.
     /// A branch is defined as a sequence of nodes starting from a node with no previous node
@@ -161,12 +180,10 @@ impl Graph {
         let mut end_nodes: Vec<usize> = Vec::new();
         for (index, node) in self.nodes.iter().enumerate() {
             if node.get_next().is_none() && !node.is_pruned() {
-                debug!("End node found at index: {}", index);
                 end_nodes.push(index);
             }
         }
 
-        debug!("Total end nodes: {}", end_nodes.len());
         end_nodes
     }
     

@@ -37,19 +37,18 @@ pub struct InferenceParameters {
     /// The initial size of the tree. Larger indicates more
     /// possibilities, but also more computation costs.
     tree_root_size: usize,
-    /// The prune threshold for the tree. Larger indicates more
-    /// possibilities, but also more computation costs.
-    prune_threshold: f32,
     /// Maximum depth that the model can reach. Leave `None` for unlimited depth.
     max_depth: Option<usize>,
+    /// How many percentage of least scored nodes to prune at the end of each depth
+    prune_percentage: f32,
 }
 
 impl Default for InferenceParameters {
     fn default() -> Self {
         Self {
             tree_root_size: 10,
-            prune_threshold: 6.0,
-            max_depth: None
+            max_depth: None,
+            prune_percentage: 0.1,
         }
     }
 }
@@ -57,13 +56,13 @@ impl Default for InferenceParameters {
 impl InferenceParameters {
     pub fn new(
         tree_root_size: usize, 
-        prune_threshold: f32, 
-        max_depth: Option<usize>
+        max_depth: Option<usize>,
+        prune_percentage: f32,
     ) -> Self {
         Self {
             tree_root_size,
-            prune_threshold,
-            max_depth
+            max_depth,
+            prune_percentage,
         }
     }
 
@@ -71,12 +70,12 @@ impl InferenceParameters {
         self.tree_root_size
     }
 
-    pub fn get_prune_threshold(&self) -> f32 {
-        self.prune_threshold
-    }
-    
     pub fn get_max_depth(&self) -> Option<usize> {
         self.max_depth
+    }
+    
+    pub fn get_prune_percentage(&self) -> f32 {
+        self.prune_percentage
     }
 }
 
@@ -186,8 +185,6 @@ impl Inference {
             .build()?
             .into());
         
-        self.terminal.write().unwrap().write_line(&format!("{:?}", &context))?;
-
         // Create message for sending to the LLM
         let request: CreateChatCompletionRequest = CreateChatCompletionRequestArgs::default()
             .seed(self.get_seed())
@@ -263,13 +260,11 @@ impl Inference {
         tree_root_size: usize
     ) -> Result<Vec<(usize, Thought)>, Error> {
         let nodes_range: std::ops::Range<usize> = 0..tree_root_size;
-        log::debug!("Starting think_in_parallel for branch: {}, tree_root_size: {}", branch, tree_root_size);
 
         // LLM thinks the next steps/nodes
         let results: Vec<(usize, Result<Thought, Error>)> = nodes_range.into_par_iter()
             .map(
                 |_| {
-                    log::debug!("Thinking for branch: {}", branch);
                     // Create nodes for N different thinking steps
                     // this is based on the `tree_root_size`
                     let thought: Result<Thought, Error> = self.think(branch);
@@ -282,13 +277,11 @@ impl Inference {
         let mut final_results: Vec<(usize, Thought)> = Vec::new();
         for result in results {
             let thought: Thought = result.1?;
-            log::debug!("Generated thought for branch: {}", result.0);
             final_results.push(
                 (result.0, thought)
             );
         }
 
-        log::debug!("Completed think_in_parallel for branch: {}", branch);
         Ok(final_results)
     }
     
@@ -312,6 +305,10 @@ impl Inference {
                 }
             )
             .collect();
+        
+        // Get the number of collected results, used to display the progress
+        // Also, it is used for confirming the number of root nodes
+        let collected_results: usize = results.len();
 
         // Add the new thoughts as nodes into the graph
         // A None in `input_index` means that the thought is a root node.
@@ -330,7 +327,7 @@ impl Inference {
         }
 
         self.terminal.write().unwrap().write_line(
-            &console::style("🌳 Root nodes initialization completed").green().to_string()
+            &console::style(&format!("🌳 {} root nodes initialization completed", collected_results)).green().to_string()
         )?;
 
         Ok(())
@@ -411,6 +408,12 @@ impl Inference {
                     self.graph.write().unwrap().link_nodes(previous_node_index, index);
                 }
             }
+            
+            // Prune nodes
+            self.graph.write().unwrap()
+                .prune_branch_by_percentage(
+                    parameters.get_prune_percentage()
+                );
 
             node_bar.finish_and_clear();
             self.terminal.write().unwrap().write_line(
@@ -442,5 +445,9 @@ impl Inference {
             
             depth += 1;
         }
+    }
+    
+    pub fn save(&self, path: &str) -> Result<(), Error> {
+        self.graph.write().unwrap().save(path)
     }
 }
