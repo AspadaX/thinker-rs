@@ -3,6 +3,7 @@ use std::{ops::Range, sync::{Arc, RwLock}};
 use anyhow::{anyhow, Error, Result};
 use async_openai::{config::OpenAIConfig, types::{ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage, ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequest, CreateChatCompletionRequestArgs, CreateChatCompletionResponse, ResponseFormat}, Client};
 use console::Term;
+use indicatif::{ProgressBar, ProgressStyle, TermLike};
 use log::info;
 use serde::{Deserialize, Serialize};
 use rayon::prelude::*;
@@ -89,6 +90,7 @@ pub struct Inference {
     graph: Arc<RwLock<Graph>>,
     client: Client<OpenAIConfig>,
     runtime: Runtime,
+    terminal: Arc<RwLock<Term>>
 }
 
 impl Inference {
@@ -112,6 +114,7 @@ impl Inference {
             query,
             model,
             runtime: Runtime::new().unwrap(),
+            terminal: Arc::new(RwLock::new(Term::stdout()))
         }
     }
     
@@ -155,6 +158,14 @@ impl Inference {
     fn create_json(&self, prompt: String, branch: usize) -> Result<CreateChatCompletionResponse, Error> {
         // Store the messages, which are the other nodes of this branch
         let mut context: Vec<ChatCompletionRequestMessage> = Vec::new();
+        
+        // Append the original user query to the beginning of the context
+        context.push(
+            ChatCompletionRequestUserMessageArgs::default()
+                .content(self.query.clone())
+                .build()?
+                .into()
+        );
 
         // Use the previous nodes as part of the prompt, if the branch
         // Add the previous nodes to the context, if any
@@ -175,7 +186,8 @@ impl Inference {
             .content(prompt)
             .build()?
             .into());
-        info!("{:?}", &context);
+        
+        self.terminal.write().unwrap().write_line(&format!("{:?}", &context))?;
 
         // Create message for sending to the LLM
         let request: CreateChatCompletionRequest = CreateChatCompletionRequestArgs::default()
@@ -284,6 +296,10 @@ impl Inference {
     /// Call this method before starting inferencing. It will create root nodes
     /// for the session. 
     fn initialize_root_nodes(&self, root_nodes_size: Range<usize>) -> Result<(), Error> {
+        self.terminal.write().unwrap().write_line(
+            &console::style("🌱 Initializing root nodes").cyan().to_string()
+        )?;
+
         // Collect the results of thinking in parallel for each active node
         let results: Vec<Result<Vec<(usize, Thought)>, Error>> = root_nodes_size
             .clone()
@@ -314,21 +330,28 @@ impl Inference {
             }
         }
 
+        self.terminal.write().unwrap().write_line(
+            &console::style("🌳 Root nodes initialization completed").green().to_string()
+        )?;
+
         Ok(())
     } 
     
     /// Run the inference, return a final thinking chain
     /// for final answer generations
     pub fn run(&mut self, parameters: InferenceParameters) -> Result<Graph, Error> {
-        let terminal = Term::stdout();
         let root_nodes: Range<usize> = 0..parameters.tree_root_size;
         self.initialize_root_nodes(root_nodes)?;
-        terminal.write_line(
+        self.terminal.write().unwrap().write_line(
             &console::style("🌳 Starting inference tree").cyan().to_string()
         )?;
 
         let mut depth: usize = 1;
-        let pb = indicatif::ProgressBar::new_spinner();
+        
+        // Create a MultiProgress container
+        let mp = indicatif::MultiProgress::new();
+        
+        let pb = mp.add(indicatif::ProgressBar::new_spinner());
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
         loop {
@@ -336,7 +359,7 @@ impl Inference {
 
             if let Some(branch) = self.graph.read().unwrap().get_only_one_not_pruned()? {
                 pb.finish_with_message("🎯 Found single active branch");
-                terminal.write_line(
+                self.terminal.write().unwrap().write_line(
                     &console::style(format!("✨ Completed at depth {} with single branch", depth)).green().to_string()
                 )?;
                 return Ok(branch);
@@ -345,45 +368,22 @@ impl Inference {
             let active_nodes: Vec<usize> = self.graph.read().unwrap().get_end_nodes();
             pb.set_message(format!("Depth {}: {} active nodes", depth, active_nodes.len()));
 
-            if Some(depth) == parameters.max_depth {
-                pb.finish_with_message("📏 Max depth reached");
-                terminal.write_line(
-                    &console::style(format!("🧠 Choosing best node from {} candidates", active_nodes.len())).yellow().to_string()
-                )?;
-
-                let (highest_index, highest_score) = active_nodes.iter()
-                    .fold((0, 0.0), |(max_idx, max_score), &idx| {
-                        let score: f32 = self.graph.write().unwrap().access_node(idx)
-                            .map(|n| n.get_closeness())
-                            .unwrap_or(0.0);
-                        if score > max_score { (idx, score) } else { (max_idx, max_score) }
-                    });
-
-                let branch = self.graph.read().unwrap()
-                    .get_branch_from_end_node(highest_index)?;
-
-                terminal.write_line(
-                    &console::style(format!("🏆 Best node score: {:.2}", highest_score)).green().to_string()
-                )?;
-                return Ok(branch);
-            }
-
-            let processing_bar = indicatif::ProgressBar::new(active_nodes.len() as u64);
-            processing_bar.set_style(indicatif::ProgressStyle::default_bar()
+            let processing_bar: ProgressBar = mp.add(indicatif::ProgressBar::new(active_nodes.len() as u64));
+            processing_bar.set_style(ProgressStyle::default_bar()
                 .template("{spinner} [{bar:40.cyan/blue}] {pos}/{len} nodes processed")
                 .unwrap()
                 .progress_chars("##-"));
 
             let results: Vec<Result<Vec<(usize, Thought)>, Error>> = active_nodes
-                .into_par_iter()
+                .par_iter()
                 .map(|node_index| {
                     processing_bar.inc(1);
-                    self.think_in_parallel(node_index, parameters.tree_root_size)
+                    self.think_in_parallel(*node_index, parameters.tree_root_size)
                 })
                 .collect();
 
             processing_bar.finish_and_clear();
-            terminal.write_line(
+            self.terminal.write().unwrap().write_line(
                 &console::style(format!("🌱 Generated {} node groups", results.len())).dim().to_string()
             )?;
 
@@ -393,8 +393,8 @@ impl Inference {
             }
 
             let total_new_nodes = nodes_infos.iter().map(|v| v.len()).sum::<usize>();
-            let node_bar = indicatif::ProgressBar::new(total_new_nodes as u64);
-            node_bar.set_style(indicatif::ProgressStyle::default_bar()
+            let node_bar = mp.add(ProgressBar::new(total_new_nodes as u64));
+            node_bar.set_style(ProgressStyle::default_bar()
                 .template("{spinner} [{bar:40.magenta/blue}] {pos}/{len} nodes evaluated")
                 .unwrap()
                 .progress_chars("##-"));
@@ -414,11 +414,34 @@ impl Inference {
             }
 
             node_bar.finish_and_clear();
-            terminal.write_line(
+            self.terminal.write().unwrap().write_line(
                 &console::style(format!("📈 Depth {} completed with {} total nodes", depth, self.graph.read().unwrap().len())).cyan().to_string()
             )?;
 
             depth += 1;
+            
+            if Some(depth) == parameters.max_depth {
+                pb.finish_with_message("📏 Max depth reached");
+                self.terminal.write().unwrap().write_line(
+                    &console::style(format!("🧠 Choosing best node from {} candidates", active_nodes.len())).yellow().to_string()
+                )?;
+
+                let (highest_index, highest_score) = active_nodes.iter()
+                    .fold((0, 0.0), |(max_idx, max_score), &idx| {
+                        let score: f32 = self.graph.write().unwrap().access_node(idx)
+                            .map(|n| n.get_closeness())
+                            .unwrap_or(0.0);
+                        if score > max_score { (idx, score) } else { (max_idx, max_score) }
+                    });
+
+                let branch = self.graph.read().unwrap()
+                    .get_branch_from_end_node(highest_index)?;
+
+                self.terminal.write().unwrap().write_line(
+                    &console::style(format!("🏆 Best node score: {:.2}", highest_score)).green().to_string()
+                )?;
+                return Ok(branch);
+            }
         }
     }
 }

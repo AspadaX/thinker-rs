@@ -1,5 +1,5 @@
 {
-  "goal": "Based on the context if any. Generate your next think step toward the final solution. Just one step ahead. You don't need to think too much.",
+  "goal": "Based on the current context (if any), generate the next logical step that directly builds on the previous progress. Ensure your step introduces a new action, computation, or insight (e.g., factoring, applying a theorem, simplifying expressions, or analyzing results) to advance toward the solution. Avoid repeating prior work.",
   "example": "",
   "json_format": "{'content': 'your thought'}",
   "prompt_type": "Thought"

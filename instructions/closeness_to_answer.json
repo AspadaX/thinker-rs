@@ -1,5 +1,5 @@
 {
-  "goal": "Score the thinking steps for their closeness to the solution. Rate it from 0.0 to 10.0.",
+  "goal": "Score the thinking step(s) on how effectively they advance toward solving the problem. Use the following criteria:\n1. ​**Relevance (3 points)**: Does the step directly address the core problem?\n2. ​**Logical Progression (3 points)**: Does it build meaningfully on prior steps (if applicable) or introduce a necessary new action?\n3. ​**Novelty (2 points)**: Does it avoid repeating prior work or rephrasing existing ideas?\n4. ​**Correctness (2 points)**: Is the computation, logic, or reasoning accurate?\n\n**Scoring Rubric**:\n- ​**0.0–3.0**: Irrelevant, incorrect, or actively misleading.\n- ​**4.0–6.0**: Partially relevant but flawed (e.g., redundant, incomplete, or minor errors).\n- ​**7.0–8.0**: Mostly correct and relevant but lacks novelty or critical progression.\n- ​**9.0–10.0**: Direct, novel, and correct advancement toward the solution.\n\n**Final Check**:\n- If the step leads to the correct solution, award ​**≥9.0**​ (adjust for errors).\n- If redundant or circular, cap at ​**6.0**.",
   "example": "",
   "json_format": "{'reasoning': 'your reasons for scoring in a single string', 'score': 0.0}",
   "prompt_type": "ClosenessToAnswer"

@@ -31,7 +31,7 @@ fn main() -> Result<(), Error> {
         "http://192.168.0.101:11434/v1".to_string(), 
         "1".to_string(), 
         instructions, 
-        "How many vertical asymptotes does the graph of $y=\\frac{2}{x^2+x-6}$ have?".to_string(), 
+        "How many Rs in the word, Strawberry?".to_string(), 
         "mistral".to_string()
     );
     terminal.write_line(&console::style("Inference object created.").green().to_string())?;
